@@ -25,6 +25,7 @@ dist
 .nitro
 .tanstack
 .vinxi
+release
 
 # Debug
 npm-debug.log*

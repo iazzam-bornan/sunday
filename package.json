@@ -1,6 +1,6 @@
 {
-  "name": "monday-wrapper",
-  "version": "0.0.1",
+  "name": "sunday",
+  "version": "0.0.2",
   "private": true,
   "scripts": {
     "build": "turbo build",
