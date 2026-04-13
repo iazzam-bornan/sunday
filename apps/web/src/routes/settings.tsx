@@ -26,17 +26,25 @@ import { useEffect, useState } from "react"
 import type {
   AppSettings,
   MondayBoardSummary,
-  MondayTheme,
+  ThemeMode,
+  ThemePresetId,
+  ThemeTokenKey,
 } from "@/lib/monday/types"
 import { getMondayBoards, getMondayBootstrap } from "@/lib/monday/server"
 import {
+  THEME_EDITOR_TOKENS,
+  THEME_PRESETS,
+  THEME_TOKEN_LABELS,
   applyTheme,
   clearAllSundayData,
   clearSettings,
+  createEmptyCustomTheme,
   getCachedValue,
+  getResolvedThemeId,
+  getThemeDefinition,
   loadSettings,
   saveCache,
-  saveSettings,
+  saveSettings
 } from "@/lib/settings"
 
 const BOARDS_CACHE_KEY = "boards"
@@ -52,23 +60,29 @@ function SettingsPage() {
   const getBoards = useServerFn(getMondayBoards)
   const [settings, setSettings] = useState<AppSettings>({})
   const [boards, setBoards] = useState<Array<MondayBoardSummary>>([])
-  const [theme, setTheme] = useState<MondayTheme>("light")
+  const [theme, setTheme] = useState<ThemePresetId>("sunday-light")
   const [saved, setSaved] = useState(false)
   const [hasEnvToken, setHasEnvToken] = useState(bootstrap.hasEnvToken)
   const [boardError, setBoardError] = useState<string>()
   const [boardsLoading, setBoardsLoading] = useState(false)
+  const activeThemeDefinition = getThemeDefinition(settings)
 
   function persistSettings(nextSettings: AppSettings) {
     setSettings(nextSettings)
     saveSettings(nextSettings)
   }
 
+  function flashSaved() {
+    setSaved(true)
+    window.setTimeout(() => setSaved(false), 1800)
+  }
+
   useEffect(() => {
     const storedSettings = loadSettings()
 
     setSettings(storedSettings)
-    setTheme(storedSettings.theme || "light")
-    applyTheme(storedSettings.theme || "light")
+    setTheme(getResolvedThemeId(storedSettings))
+    applyTheme(storedSettings)
 
     async function loadBoards() {
       setBoardsLoading(true)
@@ -100,19 +114,17 @@ function SettingsPage() {
 
   async function save() {
     saveSettings(settings)
-    setSaved(true)
+    flashSaved()
     const nextBootstrap = await refreshBootstrap()
     setHasEnvToken(nextBootstrap.hasEnvToken)
-    window.setTimeout(() => setSaved(false), 1800)
   }
 
   function clear() {
     clearSettings()
     setSettings({})
-    setTheme("light")
-    applyTheme("light")
-    setSaved(true)
-    window.setTimeout(() => setSaved(false), 1800)
+    setTheme("sunday-light")
+    applyTheme("sunday-light")
+    flashSaved()
   }
 
   function resetApp() {
@@ -121,14 +133,69 @@ function SettingsPage() {
   }
 
   function toggleTheme() {
-    const nextTheme = theme === "dark" ? "light" : "dark"
+    const nextTheme: ThemePresetId =
+      activeThemeDefinition.mode === "dark" ? "sunday-light" : "sunday-dark"
 
     setTheme(nextTheme)
-    applyTheme(nextTheme)
-    persistSettings({
+    const nextSettings = {
       ...settings,
       theme: nextTheme,
-    })
+    }
+    applyTheme(nextSettings)
+    persistSettings(nextSettings)
+  }
+
+  function selectTheme(nextTheme: ThemePresetId) {
+    setTheme(nextTheme)
+    const nextSettings = {
+      ...settings,
+      theme: nextTheme,
+      customTheme:
+        nextTheme === "custom"
+          ? settings.customTheme || createEmptyCustomTheme()
+          : settings.customTheme,
+      themeMode:
+        nextTheme === "custom" ? settings.themeMode || "dark" : settings.themeMode,
+    }
+    persistSettings(nextSettings)
+    flashSaved()
+    applyTheme(nextSettings)
+  }
+
+  function updateCustomThemeMode(themeMode: ThemeMode) {
+    const nextSettings = {
+      ...settings,
+      theme: "custom" as const,
+      themeMode,
+      customTheme: settings.customTheme || createEmptyCustomTheme(),
+    }
+    setTheme("custom")
+    persistSettings(nextSettings)
+    flashSaved()
+    applyTheme(nextSettings)
+  }
+
+  function updateCustomThemeColor(token: ThemeTokenKey, value: string) {
+    const nextCustomTheme = {
+      ...(settings.customTheme || createEmptyCustomTheme()),
+    }
+
+    if (value.trim()) {
+      nextCustomTheme[token] = value
+    } else {
+      delete nextCustomTheme[token]
+    }
+
+    const nextSettings = {
+      ...settings,
+      theme: "custom" as const,
+      customTheme: nextCustomTheme,
+      themeMode: settings.themeMode || "dark",
+    }
+    setTheme("custom")
+    persistSettings(nextSettings)
+    flashSaved()
+    applyTheme(nextSettings)
   }
 
   function updateConnection(nextSettings: AppSettings) {
@@ -200,25 +267,140 @@ function SettingsPage() {
                 <div>
                   <h2 className="font-medium">General</h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Theme and local app preferences.
+                    Theme presets, custom palette, and local app preferences.
                   </p>
                 </div>
                 {saved ? <Badge variant="secondary">saved</Badge> : null}
               </div>
               <Separator className="my-4" />
+              <div className="grid gap-3">
+                <div className="grid gap-2">
+                  <Label>Theme preset</Label>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {THEME_PRESETS.map((preset) => {
+                      const selected = theme === preset.id
+
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => selectTheme(preset.id)}
+                          className={`grid gap-1 border p-3 text-left transition ${
+                            selected
+                              ? "border-primary bg-primary/8"
+                              : "border-border bg-background"
+                          }`}
+                        >
+                          <span className="text-sm font-medium">
+                            {preset.label}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {preset.description}
+                          </span>
+                        </button>
+                      )
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => selectTheme("custom")}
+                      className={`grid gap-1 border p-3 text-left transition ${
+                        theme === "custom"
+                          ? "border-primary bg-primary/8"
+                          : "border-border bg-background"
+                      }`}
+                    >
+                      <span className="text-sm font-medium">Custom</span>
+                      <span className="text-xs text-muted-foreground">
+                        Build your own palette.
+                      </span>
+                    </button>
+                  </div>
+                </div>
+                {theme === "custom" ? (
+                  <div className="grid gap-3 border border-border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <Label>Custom theme</Label>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Changes apply live and save with your app settings.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant={
+                            (settings.themeMode || "dark") === "light"
+                              ? "default"
+                              : "outline"
+                          }
+                          size="sm"
+                          onClick={() => updateCustomThemeMode("light")}
+                        >
+                          Light base
+                        </Button>
+                        <Button
+                          variant={
+                            (settings.themeMode || "dark") === "dark"
+                              ? "default"
+                              : "outline"
+                          }
+                          size="sm"
+                          onClick={() => updateCustomThemeMode("dark")}
+                        >
+                          Dark base
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {THEME_EDITOR_TOKENS.map((token) => (
+                        <label key={token} className="grid gap-1.5">
+                          <span className="text-xs font-medium">
+                            {THEME_TOKEN_LABELS[token]}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="color"
+                              value={toColorInputValue(
+                                settings.customTheme?.[token]
+                              )}
+                              onChange={(event) =>
+                                updateCustomThemeColor(token, event.target.value)
+                              }
+                              className="h-9 w-14 p-1"
+                            />
+                            <Input
+                              value={settings.customTheme?.[token] || ""}
+                              placeholder="Default"
+                              onChange={(event) =>
+                                updateCustomThemeColor(token, event.target.value)
+                              }
+                            />
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <Separator className="my-4" />
               <div className="flex flex-wrap items-center justify-between gap-3 border border-border p-3">
                 <div>
-                  <Label>Theme</Label>
+                  <Label>Quick toggle</Label>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Applies immediately and stays in this browser.
+                    Jump between Sunday Light and Sunday Dark.
                   </p>
                 </div>
                 <Button variant="outline" onClick={toggleTheme}>
                   <HugeiconsIcon
-                    icon={theme === "dark" ? Sun02Icon : Moon02Icon}
+                    icon={
+                      activeThemeDefinition.mode === "dark"
+                        ? Sun02Icon
+                        : Moon02Icon
+                    }
                     strokeWidth={2}
                   />
-                  {theme === "dark" ? "Use light" : "Use dark"}
+                  {activeThemeDefinition.mode === "dark"
+                    ? "Use light"
+                    : "Use dark"}
                 </Button>
               </div>
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border border-destructive/30 bg-destructive/5 p-3">
@@ -389,4 +571,12 @@ function SettingsPage() {
       </section>
     </main>
   )
+}
+
+function toColorInputValue(value?: string) {
+  if (!value) {
+    return "#0f172a"
+  }
+
+  return value.startsWith("#") ? value : "#0f172a"
 }

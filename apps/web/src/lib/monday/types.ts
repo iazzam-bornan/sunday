@@ -4,7 +4,47 @@ export type MondaySettings = {
   statusColumnId?: string
 }
 
-export type MondayTheme = "light" | "dark"
+export type ThemeMode = "light" | "dark"
+
+export type ThemePresetId =
+  | "sunday-light"
+  | "sunday-dark"
+  | "monday"
+  | "discord"
+  | "graphite"
+  | "aurora"
+  | "custom"
+
+export type MondayTheme = ThemePresetId | ThemeMode
+
+export type ThemeTokenKey =
+  | "background"
+  | "foreground"
+  | "card"
+  | "card-foreground"
+  | "popover"
+  | "popover-foreground"
+  | "primary"
+  | "primary-foreground"
+  | "secondary"
+  | "secondary-foreground"
+  | "muted"
+  | "muted-foreground"
+  | "accent"
+  | "accent-foreground"
+  | "border"
+  | "input"
+  | "ring"
+  | "sidebar"
+  | "sidebar-foreground"
+  | "sidebar-primary"
+  | "sidebar-primary-foreground"
+  | "sidebar-accent"
+  | "sidebar-accent-foreground"
+  | "sidebar-border"
+  | "sidebar-ring"
+
+export type ThemeTokenMap = Partial<Record<ThemeTokenKey, string>>
 
 export type BoardFilters = {
   assigneeIds?: Array<string>
@@ -30,6 +70,8 @@ export type AppSettings = MondaySettings & {
   detailsPanelWidth?: number
   columnOrderByBoard?: Record<string, Array<string>>
   theme?: MondayTheme
+  themeMode?: ThemeMode
+  customTheme?: ThemeTokenMap
   visibleStatusIdsByBoard?: Record<string, Array<string>>
 }
 

@@ -61,8 +61,8 @@ import type {
   BoardFilters,
   MondayBoardDetail,
   MondayBoardSummary,
-  MondayTheme,
   MondayTicket,
+  ThemePresetId,
 } from "@/lib/monday/types"
 import { KanbanColumn } from "@/components/kanban/kanban-column"
 import { TicketCard } from "@/components/kanban/ticket-card"
@@ -75,8 +75,10 @@ import {
   moveMondayTicket,
 } from "@/lib/monday/server"
 import {
+  THEME_PRESETS,
   applyTheme,
   getCachedValue,
+  getThemeDefinition,
   loadSettings,
   saveCache,
   saveSettings,
@@ -102,7 +104,6 @@ function App() {
   const createTicket = useServerFn(createMondayTicket)
   const [settings, setSettings] = useState<AppSettings>({})
   const [apiTokenInput, setApiTokenInput] = useState("")
-  const [theme, setTheme] = useState<MondayTheme>("light")
   const [boards, setBoards] = useState<Array<MondayBoardSummary>>([])
   const [boardSearch, setBoardSearch] = useState("")
   const [selectedBoardId, setSelectedBoardId] = useState(
@@ -136,6 +137,7 @@ function App() {
     }),
     [selectedBoardId, settings]
   )
+  const activeThemeDefinition = getThemeDefinition(settings)
 
   function persistSettings(nextSettings: AppSettings) {
     setSettings(nextSettings)
@@ -230,8 +232,7 @@ function App() {
     setSettings(storedSettings)
     setApiTokenInput(storedSettings.apiToken || "")
     setDetailsPanelWidth(storedSettings.detailsPanelWidth || 448)
-    setTheme(storedSettings.theme || "light")
-    applyTheme(storedSettings.theme || "light")
+    applyTheme(storedSettings)
 
     async function boot() {
       if (!bootstrap.hasEnvToken && !storedSettings.apiToken?.trim()) {
@@ -634,15 +635,15 @@ function App() {
     })
   }
 
-  function toggleTheme() {
-    const nextTheme = theme === "dark" ? "light" : "dark"
-
-    setTheme(nextTheme)
-    applyTheme(nextTheme)
-    persistSettings({
+  function setTheme(theme: ThemePresetId) {
+    const nextSettings = {
       ...settings,
-      theme: nextTheme,
-    })
+      theme,
+      customTheme: theme === "custom" ? settings.customTheme : settings.customTheme,
+      themeMode: theme === "custom" ? settings.themeMode || "dark" : settings.themeMode,
+    }
+    applyTheme(nextSettings)
+    persistSettings(nextSettings)
   }
 
   function setAllStatusesVisible() {
@@ -918,18 +919,44 @@ function App() {
                 <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} />
               </Link>
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleTheme}
-              aria-label="Toggle theme"
-              className="ms-auto lg:ms-0"
-            >
-              <HugeiconsIcon
-                icon={theme === "dark" ? Sun02Icon : Moon02Icon}
-                strokeWidth={2}
-              />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Theme"
+                  className="ms-auto lg:ms-0"
+                >
+                  <HugeiconsIcon
+                    icon={
+                      activeThemeDefinition.mode === "dark"
+                        ? Sun02Icon
+                        : Moon02Icon
+                    }
+                    strokeWidth={2}
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Theme</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={settings.theme || "sunday-light"}
+                  onValueChange={(value) => setTheme(value as ThemePresetId)}
+                >
+                  {THEME_PRESETS.map((themeOption) => (
+                    <DropdownMenuRadioItem
+                      key={themeOption.id}
+                      value={themeOption.id}
+                    >
+                      {themeOption.label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                  <DropdownMenuRadioItem value="custom">
+                    Custom
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
