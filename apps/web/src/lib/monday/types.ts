@@ -62,8 +62,12 @@ export type BoardFilters = {
     | "due-date-desc"
 }
 
+export type BoardViewMode = "board" | "list"
+
 export type AppSettings = MondaySettings & {
   boardFiltersByBoard?: Record<string, BoardFilters>
+  boardViewByBoard?: Record<string, BoardViewMode>
+  collapsedListStatusIdsByBoard?: Record<string, Array<string>>
   hiddenBoardIds?: Array<string>
   lastBoardId?: string
   lastOpenedTicketIdByBoard?: Record<string, string>

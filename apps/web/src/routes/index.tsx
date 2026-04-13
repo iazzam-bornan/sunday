@@ -34,6 +34,7 @@ import {
 } from "@workspace/ui/components/avatar"
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
+import { ButtonGroup } from "@workspace/ui/components/button-group"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -59,6 +60,7 @@ import type { KanbanState } from "@/components/kanban/types"
 import type {
   AppSettings,
   BoardFilters,
+  BoardViewMode,
   MondayBoardDetail,
   MondayBoardSummary,
   MondayTicket,
@@ -67,6 +69,7 @@ import type {
 import { KanbanColumn } from "@/components/kanban/kanban-column"
 import { TicketCard } from "@/components/kanban/ticket-card"
 import { TicketDetailPanel } from "@/components/kanban/ticket-detail-sheet"
+import { TicketListView } from "@/components/kanban/ticket-list-view"
 import {
   createMondayTicket,
   getMondayBoard,
@@ -91,6 +94,20 @@ export const Route = createFileRoute("/")({
 
 const NO_STATUS_COLUMN_ID = "no-status"
 const BOARDS_CACHE_KEY = "boards"
+type UpdaterState = {
+  availableVersion?: string
+  error?: string
+  progressPercent: number
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "up-to-date"
+    | "error"
+    | "unavailable"
+}
 
 function getBoardCacheKey(boardId: string) {
   return `board:${boardId}`
@@ -126,6 +143,12 @@ function App() {
   const [detailsPanelWidth, setDetailsPanelWidth] = useState(448)
   const [error, setError] = useState<string>()
   const [waitingForToken, setWaitingForToken] = useState(false)
+  const [hasUpdaterBridge, setHasUpdaterBridge] = useState(false)
+  const [updaterState, setUpdaterState] = useState<UpdaterState>({
+    progressPercent: 0,
+    status: "unavailable",
+  })
+  const [updaterBusy, setUpdaterBusy] = useState(false)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
   )
@@ -308,6 +331,18 @@ function App() {
   }, [bootstrap.envDefaultBoardId, getBoard, getBoards, hydrateBoard])
 
   useEffect(() => {
+    if (!window.sundayUpdater) {
+      return
+    }
+
+    setHasUpdaterBridge(true)
+    void window.sundayUpdater.getState().then(setUpdaterState)
+    const unsubscribe = window.sundayUpdater.onStateChange(setUpdaterState)
+
+    return unsubscribe
+  }, [])
+
+  useEffect(() => {
     if (!board || !kanban) {
       return
     }
@@ -346,6 +381,14 @@ function App() {
     board && settings.boardFiltersByBoard?.[board.id]
       ? settings.boardFiltersByBoard[board.id]
       : { sort: "board" }
+  const boardView: BoardViewMode =
+    board && settings.boardViewByBoard?.[board.id]
+      ? settings.boardViewByBoard[board.id]
+      : "board"
+  const collapsedListStatusIds =
+    board && settings.collapsedListStatusIdsByBoard?.[board.id]
+      ? settings.collapsedListStatusIdsByBoard[board.id]
+      : []
   const visibleColumns = useMemo(
     () =>
       kanban
@@ -646,6 +689,89 @@ function App() {
     persistSettings(nextSettings)
   }
 
+  function setBoardView(nextView: BoardViewMode) {
+    if (!board) {
+      return
+    }
+
+    persistSettings({
+      ...settings,
+      boardViewByBoard: {
+        ...settings.boardViewByBoard,
+        [board.id]: nextView,
+      },
+    })
+  }
+
+  function setCollapsedListColumns(nextCollapsedIds: Array<string>) {
+    if (!board) {
+      return
+    }
+
+    persistSettings({
+      ...settings,
+      collapsedListStatusIdsByBoard: {
+        ...settings.collapsedListStatusIdsByBoard,
+        [board.id]: nextCollapsedIds,
+      },
+    })
+  }
+
+  async function triggerUpdaterAction() {
+    if (!window.sundayUpdater || updaterBusy) {
+      return
+    }
+
+    setUpdaterBusy(true)
+
+    try {
+      if (
+        updaterState.status === "idle" ||
+        updaterState.status === "up-to-date" ||
+        updaterState.status === "error"
+      ) {
+        await window.sundayUpdater.check()
+      } else if (updaterState.status === "available") {
+        await window.sundayUpdater.download()
+      } else if (updaterState.status === "downloaded") {
+        await window.sundayUpdater.install()
+      }
+    } finally {
+      setUpdaterBusy(false)
+    }
+  }
+
+  function getUpdaterButtonLabel() {
+    switch (updaterState.status) {
+      case "checking":
+        return "Checking"
+      case "available":
+        return updaterState.availableVersion
+          ? `Download ${updaterState.availableVersion}`
+          : "Download update"
+      case "downloading":
+        return `Downloading ${Math.round(updaterState.progressPercent)}%`
+      case "downloaded":
+        return updaterState.availableVersion
+          ? `Install ${updaterState.availableVersion}`
+          : "Install update"
+      case "up-to-date":
+        return "Up to date"
+      case "error":
+        return "Retry update"
+      case "unavailable":
+        return "Updates"
+      default:
+        return "Check updates"
+    }
+  }
+
+  const updaterButtonDisabled =
+    updaterBusy ||
+    updaterState.status === "checking" ||
+    updaterState.status === "downloading" ||
+    updaterState.status === "unavailable"
+
   function setAllStatusesVisible() {
     if (!board || !kanban) {
       return
@@ -828,6 +954,31 @@ function App() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-lg font-semibold tracking-normal">Sunday</h1>
+              {hasUpdaterBridge ? (
+                <Button
+                  variant={
+                    updaterState.status === "downloaded"
+                      ? "default"
+                      : "outline"
+                  }
+                  size="sm"
+                  onClick={() => void triggerUpdaterAction()}
+                  disabled={updaterButtonDisabled}
+                  className="h-7 gap-2 px-2.5 text-xs"
+                >
+                  {updaterState.status === "checking" ||
+                  updaterState.status === "downloading" ? (
+                    <Spinner className="size-3" />
+                  ) : (
+                    <HugeiconsIcon
+                      icon={ArrowReloadHorizontalIcon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                    />
+                  )}
+                  <span>{getUpdaterButtonLabel()}</span>
+                </Button>
+              ) : null}
               {bootstrap.hasEnvToken ? (
                 <Badge variant="outline">env token</Badge>
               ) : null}
@@ -842,6 +993,16 @@ function App() {
               ) : null}
               {hiddenColumnCount ? (
                 <Badge variant="outline">{hiddenColumnCount} hidden</Badge>
+              ) : null}
+              {updaterState.status === "downloading" ? (
+                <Badge variant="secondary">
+                  {Math.round(updaterState.progressPercent)}%
+                </Badge>
+              ) : null}
+              {updaterState.status === "error" && updaterState.error ? (
+                <Badge variant="outline" className="max-w-[18rem] truncate">
+                  {updaterState.error}
+                </Badge>
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -971,17 +1132,27 @@ function App() {
         <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden p-4">
           {board ? (
             <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="secondary">{board.name}</Badge>
-              <span>{board.tickets.length} tickets</span>
-              <span>
-                {board.statusColumn?.title || "No status column found"}
-              </span>
+              <ButtonGroup>
+                <Button
+                  variant={boardView === "board" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setBoardView("board")}
+                >
+                  Board
+                </Button>
+                <Button
+                  variant={boardView === "list" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setBoardView("list")}
+                >
+                  List
+                </Button>
+              </ButtonGroup>
 
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm">
                     <HugeiconsIcon icon={GridViewIcon} strokeWidth={2} />
-                    Status
                     {hiddenColumnCount ? (
                       <Badge variant="secondary">{hiddenColumnCount}</Badge>
                     ) : null}
@@ -1232,73 +1403,85 @@ function App() {
           {loading ? (
             <BoardLoadingState label={loadingLabel} />
           ) : kanban && board?.statusColumn ? (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCorners}
-              onDragStart={onDragStart}
-              onDragOver={onDragOver}
-              onDragEnd={(event) => void onDragEnd(event)}
-            >
-              <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden pb-3">
-                <SortableContext
-                  items={visibleColumns.map((column) => `column:${column.id}`)}
-                  strategy={horizontalListSortingStrategy}
-                >
-                  {visibleColumns.map((column) => (
-                    <Fragment key={column.id}>
-                      {activeColumnId &&
-                      overColumnId === column.id &&
-                      activeColumnId !== column.id ? (
-                        <ColumnGhost key={`ghost:${column.id}`} />
-                      ) : null}
-                      <KanbanColumn
-                        key={column.id}
-                        adding={addingColumnId === column.id}
-                        addingName={newTicketName}
-                        column={column}
-                        creating={creatingTicket}
-                        isColumnDragActive={Boolean(activeColumnId)}
-                        overId={
-                          activeDropColumnId === column.id
-                            ? overDragId
-                            : undefined
-                        }
-                        showDropIndicator={Boolean(
-                          activeTicketId && activeDropColumnId === column.id
-                        )}
-                        tickets={filteredTicketsByColumn[column.id]}
-                        onAddingNameChange={setNewTicketName}
-                        onCancelAdd={() => {
-                          setAddingColumnId(undefined)
-                          setNewTicketName("")
-                        }}
-                        onCreateTicket={() => void addTicketToColumn(column.id)}
-                        onOpenTicket={openTicketPanel}
-                        onStartAdd={() => {
-                          setAddingColumnId(column.id)
-                          setNewTicketName("")
-                        }}
+            boardView === "list" ? (
+              <TicketListView
+                collapsedColumnIds={collapsedListStatusIds}
+                columns={visibleColumns}
+                ticketsByColumn={filteredTicketsByColumn}
+                onCollapsedColumnIdsChange={setCollapsedListColumns}
+                onOpenTicket={openTicketPanel}
+              />
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCorners}
+                onDragStart={onDragStart}
+                onDragOver={onDragOver}
+                onDragEnd={(event) => void onDragEnd(event)}
+              >
+                <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden pb-3">
+                  <SortableContext
+                    items={visibleColumns.map((column) => `column:${column.id}`)}
+                    strategy={horizontalListSortingStrategy}
+                  >
+                    {visibleColumns.map((column) => (
+                      <Fragment key={column.id}>
+                        {activeColumnId &&
+                        overColumnId === column.id &&
+                        activeColumnId !== column.id ? (
+                          <ColumnGhost key={`ghost:${column.id}`} />
+                        ) : null}
+                        <KanbanColumn
+                          key={column.id}
+                          adding={addingColumnId === column.id}
+                          addingName={newTicketName}
+                          column={column}
+                          creating={creatingTicket}
+                          isColumnDragActive={Boolean(activeColumnId)}
+                          overId={
+                            activeDropColumnId === column.id
+                              ? overDragId
+                              : undefined
+                          }
+                          showDropIndicator={Boolean(
+                            activeTicketId && activeDropColumnId === column.id
+                          )}
+                          tickets={filteredTicketsByColumn[column.id]}
+                          onAddingNameChange={setNewTicketName}
+                          onCancelAdd={() => {
+                            setAddingColumnId(undefined)
+                            setNewTicketName("")
+                          }}
+                          onCreateTicket={() =>
+                            void addTicketToColumn(column.id)
+                          }
+                          onOpenTicket={openTicketPanel}
+                          onStartAdd={() => {
+                            setAddingColumnId(column.id)
+                            setNewTicketName("")
+                          }}
+                        />
+                      </Fragment>
+                    ))}
+                  </SortableContext>
+                </div>
+                <DragOverlay>
+                  {activeTicket ? (
+                    <div className="w-[18rem]">
+                      <TicketCard
+                        ticket={activeTicket}
+                        onOpen={() => undefined}
                       />
-                    </Fragment>
-                  ))}
-                </SortableContext>
-              </div>
-              <DragOverlay>
-                {activeTicket ? (
-                  <div className="w-[18rem]">
-                    <TicketCard
-                      ticket={activeTicket}
-                      onOpen={() => undefined}
+                    </div>
+                  ) : activeColumn ? (
+                    <ColumnDragOverlay
+                      column={activeColumn}
+                      tickets={filteredTicketsByColumn[activeColumn.id]}
                     />
-                  </div>
-                ) : activeColumn ? (
-                  <ColumnDragOverlay
-                    column={activeColumn}
-                    tickets={filteredTicketsByColumn[activeColumn.id]}
-                  />
-                ) : null}
-              </DragOverlay>
-            </DndContext>
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            )
           ) : (
             <div className="flex min-h-[24rem] items-center justify-center border border-dashed border-border p-8 text-center">
               <div className="max-w-md">

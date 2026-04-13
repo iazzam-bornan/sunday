@@ -252,9 +252,35 @@ type SundayStorageBridge = {
   removeMatching: (prefixes: Array<string>, exactKeys: Array<string>) => void
 }
 
+type SundayUpdaterState = {
+  availableVersion?: string
+  error?: string
+  progressPercent: number
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "up-to-date"
+    | "error"
+    | "unavailable"
+}
+
+type SundayUpdaterBridge = {
+  check: () => Promise<SundayUpdaterState>
+  download: () => Promise<SundayUpdaterState>
+  getState: () => Promise<SundayUpdaterState>
+  install: () => Promise<SundayUpdaterState>
+  onStateChange: (
+    callback: (value: SundayUpdaterState) => void
+  ) => () => void
+}
+
 declare global {
   interface Window {
     sundayStorage?: SundayStorageBridge
+    sundayUpdater?: SundayUpdaterBridge
   }
 }
 

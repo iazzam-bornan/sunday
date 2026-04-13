@@ -11,11 +11,54 @@ const DEV_SERVER_RETRY_MS = 500
 const WINDOW_ICON = path.join(__dirname, "..", "assets", "icon.png")
 const PRELOAD = path.join(__dirname, "preload.cjs")
 
+/**
+ * @typedef {"idle" | "checking" | "available" | "downloading" | "downloaded" | "up-to-date" | "error" | "unavailable"} UpdaterStatus
+ */
+
+/**
+ * @typedef {{
+ *   availableVersion?: string
+ *   error?: string
+ *   progressPercent: number
+ *   status: UpdaterStatus
+ * }} UpdaterState
+ */
+
+/** @type {BrowserWindow | undefined} */
 let mainWindow
 /** @type {string | undefined} */
 let storagePath
 /** @type {Record<string, string>} */
 let storage = {}
+let updaterRegistered = false
+/** @type {UpdaterState} */
+let updaterState = {
+  availableVersion: undefined,
+  error: undefined,
+  progressPercent: 0,
+  status: /** @type {UpdaterStatus} */ (
+    app.isPackaged ? "idle" : "unavailable"
+  ),
+}
+
+function broadcastUpdaterState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  mainWindow.webContents.send("sunday-updater:state", updaterState)
+}
+
+/**
+ * @param {Partial<UpdaterState>} nextState
+ */
+function setUpdaterState(nextState) {
+  updaterState = {
+    ...updaterState,
+    ...nextState,
+  }
+  broadcastUpdaterState()
+}
 
 function loadStorage() {
   storagePath = path.join(app.getPath("userData"), "sunday-storage.json")
@@ -77,20 +120,115 @@ function registerStorageIpc() {
 }
 
 function registerAutoUpdater() {
+  if (updaterRegistered) {
+    broadcastUpdaterState()
+    return
+  }
+
+  updaterRegistered = true
+
+  ipcMain.handle("sunday-updater:get-state", () => updaterState)
+  ipcMain.handle("sunday-updater:check", async () => {
+    if (!app.isPackaged) {
+      setUpdaterState({
+        availableVersion: undefined,
+        error: undefined,
+        progressPercent: 0,
+        status: "unavailable",
+      })
+      return updaterState
+    }
+
+    setUpdaterState({
+      availableVersion: undefined,
+      error: undefined,
+      progressPercent: 0,
+      status: "checking",
+    })
+    await autoUpdater.checkForUpdates()
+    return updaterState
+  })
+  ipcMain.handle("sunday-updater:download", async () => {
+    if (!app.isPackaged) {
+      setUpdaterState({
+        error: "Updates are only available in the packaged app.",
+        status: "unavailable",
+      })
+      return updaterState
+    }
+
+    setUpdaterState({
+      error: undefined,
+      progressPercent: 0,
+      status: "downloading",
+    })
+    await autoUpdater.downloadUpdate()
+    return updaterState
+  })
+  ipcMain.handle("sunday-updater:install", () => {
+    if (updaterState.status === "downloaded") {
+      autoUpdater.quitAndInstall()
+    }
+    return updaterState
+  })
+
   if (!app.isPackaged) {
     return
   }
 
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+
+  autoUpdater.on("checking-for-update", () => {
+    setUpdaterState({
+      error: undefined,
+      progressPercent: 0,
+      status: "checking",
+    })
+  })
+
+  autoUpdater.on("update-available", (info) => {
+    setUpdaterState({
+      availableVersion: info?.version,
+      error: undefined,
+      progressPercent: 0,
+      status: "available",
+    })
+  })
+
+  autoUpdater.on("update-not-available", () => {
+    setUpdaterState({
+      availableVersion: undefined,
+      error: undefined,
+      progressPercent: 100,
+      status: "up-to-date",
+    })
+  })
+
+  autoUpdater.on("download-progress", (progress) => {
+    setUpdaterState({
+      error: undefined,
+      progressPercent: Number(progress?.percent || 0),
+      status: "downloading",
+    })
+  })
+
+  autoUpdater.on("update-downloaded", (info) => {
+    setUpdaterState({
+      availableVersion: info?.version,
+      error: undefined,
+      progressPercent: 100,
+      status: "downloaded",
+    })
+  })
 
   autoUpdater.on("error", (error) => {
     console.warn("Sunday update check failed:", error)
+    setUpdaterState({
+      error: error instanceof Error ? error.message : String(error),
+      status: "error",
+    })
   })
-
-  setTimeout(() => {
-    void autoUpdater.checkForUpdatesAndNotify()
-  }, 3_000)
 }
 
 /**
@@ -287,6 +425,7 @@ app.setName("Sunday")
 app.whenReady().then(async () => {
   loadStorage()
   registerStorageIpc()
+  registerAutoUpdater()
   await createWindow()
 
   app.on("activate", async () => {

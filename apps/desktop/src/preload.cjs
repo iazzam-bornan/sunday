@@ -1,5 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron")
 
+/**
+ * @typedef {{
+ *   availableVersion?: string
+ *   error?: string
+ *   progressPercent: number
+ *   status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "up-to-date" | "error" | "unavailable"
+ * }} UpdaterState
+ */
+
 contextBridge.exposeInMainWorld("sundayStorage", {
   /**
    * @param {string} key
@@ -37,5 +46,52 @@ contextBridge.exposeInMainWorld("sundayStorage", {
    */
   removeMatching(prefixes, exactKeys) {
     ipcRenderer.sendSync("sunday-storage:remove-matching", prefixes, exactKeys)
+  },
+})
+
+contextBridge.exposeInMainWorld("sundayUpdater", {
+  /**
+   * @returns {Promise<UpdaterState>}
+   */
+  async getState() {
+    return ipcRenderer.invoke("sunday-updater:get-state")
+  },
+
+  /**
+   * @returns {Promise<UpdaterState>}
+   */
+  async check() {
+    return ipcRenderer.invoke("sunday-updater:check")
+  },
+
+  /**
+   * @returns {Promise<UpdaterState>}
+   */
+  async download() {
+    return ipcRenderer.invoke("sunday-updater:download")
+  },
+
+  /**
+   * @returns {Promise<UpdaterState>}
+   */
+  async install() {
+    return ipcRenderer.invoke("sunday-updater:install")
+  },
+
+  /**
+   * @param {(value: UpdaterState) => void} callback
+   * @returns {() => void}
+   */
+  onStateChange(callback) {
+    /**
+     * @param {unknown} _event
+     * @param {UpdaterState} value
+     */
+    const listener = (_event, value) => callback(value)
+    ipcRenderer.on("sunday-updater:state", listener)
+
+    return () => {
+      ipcRenderer.removeListener("sunday-updater:state", listener)
+    }
   },
 })
