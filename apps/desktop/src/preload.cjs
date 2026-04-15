@@ -95,3 +95,21 @@ contextBridge.exposeInMainWorld("sundayUpdater", {
     }
   },
 })
+
+contextBridge.exposeInMainWorld("sundayShell", {
+  /**
+   * @param {string} targetPath
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  async openPath(targetPath) {
+    return ipcRenderer.invoke("sunday-shell:open-path", targetPath)
+  },
+
+  /**
+   * @param {{ defaultPath?: string }} options
+   * @returns {Promise<{ canceled: boolean, path?: string }>}
+   */
+  async pickPath(options) {
+    return ipcRenderer.invoke("sunday-shell:pick-path", options)
+  },
+})

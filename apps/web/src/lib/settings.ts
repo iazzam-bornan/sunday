@@ -277,8 +277,16 @@ type SundayUpdaterBridge = {
   ) => () => void
 }
 
+type SundayShellBridge = {
+  openPath: (targetPath: string) => Promise<{ ok: boolean; error?: string }>
+  pickPath: (options: {
+    defaultPath?: string
+  }) => Promise<{ canceled: boolean; path?: string }>
+}
+
 declare global {
   interface Window {
+    sundayShell?: SundayShellBridge
     sundayStorage?: SundayStorageBridge
     sundayUpdater?: SundayUpdaterBridge
   }

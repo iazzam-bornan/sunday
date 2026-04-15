@@ -117,6 +117,34 @@ function registerStorageIpc() {
     saveStorage()
     event.returnValue = true
   })
+
+  ipcMain.handle("sunday-shell:open-path", async (_event, targetPath) => {
+    const error = await shell.openPath(String(targetPath || ""))
+    return {
+      error: error || undefined,
+      ok: !error,
+    }
+  })
+
+  ipcMain.handle("sunday-shell:pick-path", async (_event, options) => {
+    /** @type {import("electron").OpenDialogOptions} */
+    const dialogOptions = {
+      defaultPath:
+        typeof options?.defaultPath === "string" && options.defaultPath
+          ? options.defaultPath
+          : undefined,
+      properties: ["openDirectory"],
+      title: "Choose project folder",
+    }
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+
+    return {
+      canceled: result.canceled,
+      path: result.filePaths[0],
+    }
+  })
 }
 
 function registerAutoUpdater() {

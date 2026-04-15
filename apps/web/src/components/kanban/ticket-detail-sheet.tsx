@@ -1,9 +1,11 @@
 import {
+  Add01Icon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
   CopyLinkIcon,
+  Github01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -30,6 +32,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
 import {
   Select,
@@ -40,6 +50,12 @@ import {
 } from "@workspace/ui/components/select"
 import { Separator } from "@workspace/ui/components/separator"
 import { Textarea } from "@workspace/ui/components/textarea"
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@workspace/ui/components/tabs"
 import { cn } from "@workspace/ui/lib/utils"
 import { useEffect, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
@@ -47,6 +63,8 @@ import type * as React from "react"
 
 import type {
   AppSettings,
+  CreatedPullRequest,
+  LocalProjectRepoInfo,
   MondayAsset,
   MondayComment,
   MondayPerson,
@@ -54,11 +72,18 @@ import type {
   MondayTicketColumnValue,
 } from "@/lib/monday/types"
 import {
+  checkoutProjectBranch,
+  createGithubPullRequest,
+  createTicketBranch,
+  generatePullRequestDraft,
+  getLocalProjectRepo,
+} from "@/lib/dev/server"
+import {
   getMondayTicketDetail,
   getMondayUsers,
   updateMondayTicketField,
 } from "@/lib/monday/server"
-import { getCachedValue, saveCache } from "@/lib/settings"
+import { getCachedValue, loadSettings, saveCache, saveSettings } from "@/lib/settings"
 
 type TicketDetailPanelProps = {
   boardId: string
@@ -85,6 +110,11 @@ export function TicketDetailPanel({
 }: TicketDetailPanelProps) {
   const getTicketDetail = useServerFn(getMondayTicketDetail)
   const getUsers = useServerFn(getMondayUsers)
+  const getProjectRepo = useServerFn(getLocalProjectRepo)
+  const generatePrDraft = useServerFn(generatePullRequestDraft)
+  const createBranch = useServerFn(createTicketBranch)
+  const checkoutBranch = useServerFn(checkoutProjectBranch)
+  const createPr = useServerFn(createGithubPullRequest)
   const updateTicketField = useServerFn(updateMondayTicketField)
   const [detail, setDetail] = useState(ticket)
   const [users, setUsers] = useState<Array<MondayPerson>>([])
@@ -92,7 +122,33 @@ export function TicketDetailPanel({
   const [savingColumnId, setSavingColumnId] = useState<string>()
   const [error, setError] = useState<string>()
   const [copied, setCopied] = useState(false)
+  const [projectInfo, setProjectInfo] = useState<LocalProjectRepoInfo>()
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [branchActionLoading, setBranchActionLoading] = useState(false)
+  const [prActionLoading, setPrActionLoading] = useState(false)
+  const [branchDialogOpen, setBranchDialogOpen] = useState(false)
+  const [prDialogOpen, setPrDialogOpen] = useState(false)
+  const [branchDialogMode, setBranchDialogMode] = useState<"existing" | "new">(
+    "existing"
+  )
+  const [selectedExistingBranch, setSelectedExistingBranch] = useState("")
+  const [branchName, setBranchName] = useState("")
+  const [baseBranch, setBaseBranch] = useState("")
+  const [prTitle, setPrTitle] = useState("")
+  const [prBody, setPrBody] = useState("")
+  const [createdPr, setCreatedPr] = useState<CreatedPullRequest>()
+  const [localSettings, setLocalSettings] = useState<AppSettings>(() =>
+    loadSettings()
+  )
   const visibleTicket = detail
+  const projectSettings = localSettings.projectLinksByBoard?.[boardId]
+  const [assignedBranch, setAssignedBranch] = useState(
+    localSettings.ticketBranchAssignmentsByBoard?.[boardId]?.[ticket.id] || ""
+  )
+  const showCheckedOutBranch = Boolean(
+    projectInfo?.currentBranch &&
+      (assignedBranch || projectInfo.currentBranch !== projectInfo.defaultBranch)
+  )
   const assignees = visibleTicket.assignees || []
   const mediaAssets = useMemo(
     () => getUniqueAssets(visibleTicket.assets || [], visibleTicket.columns),
@@ -105,6 +161,11 @@ export function TicketDetailPanel({
   const descriptionField = findDescriptionField(
     visibleTicket.columns,
     customNameFields
+  )
+  const prSummaryText = getTicketPrSummary(visibleTicket, customNameFields)
+  const prDescriptionText = getTicketPrDescription(
+    visibleTicket,
+    descriptionField
   )
   const statusField = visibleTicket.columns.find(
     (column) => column.id === visibleTicket.statusColumnId
@@ -151,6 +212,30 @@ export function TicketDetailPanel({
     window.addEventListener("pointermove", onPointerMove)
     window.addEventListener("pointerup", onPointerUp)
   }
+
+  function refreshLocalSettings() {
+    const nextSettings = loadSettings()
+    setLocalSettings(nextSettings)
+    return nextSettings
+  }
+
+  useEffect(() => {
+    refreshLocalSettings()
+  }, [boardId, ticket.id])
+
+  useEffect(() => {
+    function syncSettings() {
+      refreshLocalSettings()
+    }
+
+    window.addEventListener("focus", syncSettings)
+    document.addEventListener("visibilitychange", syncSettings)
+
+    return () => {
+      window.removeEventListener("focus", syncSettings)
+      document.removeEventListener("visibilitychange", syncSettings)
+    }
+  }, [])
 
   useEffect(() => {
     let ignore = false
@@ -221,6 +306,148 @@ export function TicketDetailPanel({
       ignore = true
     }
   }, [getUsers, settings])
+
+  useEffect(() => {
+    setAssignedBranch(
+      localSettings.ticketBranchAssignmentsByBoard?.[boardId]?.[ticket.id] || ""
+    )
+  }, [boardId, localSettings.ticketBranchAssignmentsByBoard, ticket.id])
+
+  useEffect(() => {
+    let ignore = false
+
+    async function loadProject() {
+      if (!projectSettings) {
+        setProjectInfo(undefined)
+        return
+      }
+
+      setProjectLoading(true)
+
+      try {
+        const nextProjectInfo = await getProjectRepo({
+          data: { project: projectSettings },
+        })
+
+        if (ignore) {
+          return
+        }
+
+        setProjectInfo(nextProjectInfo)
+        const nextBaseBranch =
+          nextProjectInfo.defaultBranch ||
+          nextProjectInfo.currentBranch ||
+          "main"
+        const nextAssignedBranch =
+          loadSettings().ticketBranchAssignmentsByBoard?.[boardId]?.[ticket.id] ||
+          ""
+        setBaseBranch(nextBaseBranch)
+        setBranchName(
+          nextAssignedBranch ||
+            applyTemplate(
+              projectSettings.branchTemplate || "ticket/{{ticketId}}-{{slug}}",
+              visibleTicket,
+              nextBaseBranch,
+              ""
+            )
+        )
+        setSelectedExistingBranch(
+          nextAssignedBranch ||
+            nextProjectInfo.currentBranch ||
+            nextProjectInfo.defaultBranch ||
+            ""
+        )
+      } catch (err) {
+        if (!ignore) {
+          setProjectInfo(undefined)
+          setError(
+            err instanceof Error ? err.message : "Unable to inspect local repo."
+          )
+        }
+      } finally {
+        if (!ignore) {
+          setProjectLoading(false)
+        }
+      }
+    }
+
+    void loadProject()
+
+    return () => {
+      ignore = true
+    }
+  }, [boardId, getProjectRepo, projectSettings, visibleTicket])
+
+  useEffect(() => {
+    let ignore = false
+
+    async function buildPrDraft() {
+      if (!projectSettings || !branchName || !baseBranch) {
+        setPrTitle("")
+        setPrBody("")
+        return
+      }
+
+      try {
+        const draft = await generatePrDraft({
+          data: {
+            baseBranch,
+            branchName,
+            project: projectSettings,
+            ticketDescription: prDescriptionText,
+            ticketId: visibleTicket.id,
+            ticketSummary: prSummaryText,
+            ticketTitle: visibleTicket.displayTitle,
+            ticketUrl: visibleTicket.url,
+          },
+        })
+
+        if (!ignore) {
+          setPrTitle(draft.title)
+          setPrBody(draft.body)
+        }
+      } catch {
+        if (!ignore) {
+          setPrTitle(
+            applyTemplate(
+              projectSettings.prTitleTemplate ||
+                "[{{ticketId}}] {{ticketTitle}}",
+              visibleTicket,
+              baseBranch,
+              branchName,
+              prSummaryText,
+              prDescriptionText
+            )
+          )
+          setPrBody(
+            applyTemplate(
+              projectSettings.prBodyTemplate ||
+                "## Summary\n\n## Monday\n- Ticket: {{ticketUrl}}",
+              visibleTicket,
+              baseBranch,
+              branchName,
+              prSummaryText,
+              prDescriptionText
+            )
+          )
+        }
+      }
+    }
+
+    void buildPrDraft()
+
+    return () => {
+      ignore = true
+    }
+  }, [
+    baseBranch,
+    branchName,
+    generatePrDraft,
+    prDescriptionText,
+    prSummaryText,
+    projectSettings,
+    visibleTicket,
+  ])
 
   async function saveField(columnId: string, value: string) {
     setSavingColumnId(columnId)
@@ -294,6 +521,172 @@ export function TicketDetailPanel({
     }
   }
 
+  async function createLinkedBranch() {
+    if (!projectSettings) {
+      setError("Link a local project to this board in Settings first.")
+      return
+    }
+
+    setBranchActionLoading(true)
+    setError(undefined)
+
+    try {
+      const nextBaseBranch =
+        baseBranch ||
+        projectInfo?.defaultBranch ||
+        projectInfo?.currentBranch ||
+        "main"
+      await createBranch({
+        data: {
+          baseBranch: nextBaseBranch,
+          branchName,
+          project: projectSettings,
+        },
+      })
+      setBaseBranch(nextBaseBranch)
+      assignTicketBranch(branchName)
+      const refreshedInfo = await getProjectRepo({
+        data: { project: projectSettings },
+      })
+      setProjectInfo(refreshedInfo)
+      setBranchDialogOpen(false)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to create the branch."
+      )
+    } finally {
+      setBranchActionLoading(false)
+    }
+  }
+
+  async function checkoutAssignedBranch() {
+    if (!projectSettings || !assignedBranch) {
+      return
+    }
+
+    setBranchActionLoading(true)
+    setError(undefined)
+
+    try {
+      await checkoutBranch({
+        data: {
+          branchName: assignedBranch,
+          project: projectSettings,
+        },
+      })
+      const refreshedInfo = await getProjectRepo({
+        data: { project: projectSettings },
+      })
+      setProjectInfo(refreshedInfo)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to checkout the branch."
+      )
+    } finally {
+      setBranchActionLoading(false)
+    }
+  }
+
+  function assignTicketBranch(nextBranch: string) {
+    const nextSettings = loadSettings()
+    const nextAssignments = {
+      ...(nextSettings.ticketBranchAssignmentsByBoard || {}),
+      [boardId]: {
+        ...(nextSettings.ticketBranchAssignmentsByBoard?.[boardId] || {}),
+        [ticket.id]: nextBranch,
+      },
+    }
+
+    saveSettings({
+      ...nextSettings,
+      ticketBranchAssignmentsByBoard: nextAssignments,
+    })
+    setLocalSettings({
+      ...nextSettings,
+      ticketBranchAssignmentsByBoard: nextAssignments,
+    })
+    setAssignedBranch(nextBranch)
+    setSelectedExistingBranch(nextBranch)
+    setBranchName(nextBranch)
+  }
+
+  function detachTicketBranch() {
+    const nextSettings = loadSettings()
+    const boardAssignments = {
+      ...(nextSettings.ticketBranchAssignmentsByBoard?.[boardId] || {}),
+    }
+
+    delete boardAssignments[ticket.id]
+
+    const nextAssignmentsByBoard = {
+      ...(nextSettings.ticketBranchAssignmentsByBoard || {}),
+      [boardId]: boardAssignments,
+    }
+
+    saveSettings({
+      ...nextSettings,
+      ticketBranchAssignmentsByBoard: nextAssignmentsByBoard,
+    })
+    setLocalSettings({
+      ...nextSettings,
+      ticketBranchAssignmentsByBoard: nextAssignmentsByBoard,
+    })
+    setAssignedBranch("")
+    setSelectedExistingBranch("")
+    setBranchName(
+      applyTemplate(
+        projectSettings?.branchTemplate || "ticket/{{ticketId}}-{{slug}}",
+        visibleTicket,
+        baseBranch,
+        "",
+        prSummaryText,
+        prDescriptionText
+      )
+    )
+  }
+
+  function assignExistingBranch() {
+    if (!selectedExistingBranch) {
+      setError("Choose a branch first.")
+      return
+    }
+
+    assignTicketBranch(selectedExistingBranch)
+    setBranchDialogOpen(false)
+  }
+
+  async function createLinkedPullRequest() {
+    if (!projectSettings) {
+      setError("Link a local project to this board in Settings first.")
+      return
+    }
+
+    setPrActionLoading(true)
+    setError(undefined)
+
+    try {
+      const nextPr = await createPr({
+        data: {
+          baseBranch,
+          body: prBody,
+          branchName,
+          draft: true,
+          project: projectSettings,
+          title: prTitle,
+        },
+      })
+
+      setCreatedPr(nextPr)
+      setPrDialogOpen(false)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to create the pull request."
+      )
+    } finally {
+      setPrActionLoading(false)
+    }
+  }
+
   return (
     <aside
       className="relative flex min-h-0 shrink-0 flex-col border-l border-border bg-background"
@@ -315,8 +708,73 @@ export function TicketDetailPanel({
             <h2 className="mt-1 text-base font-semibold break-words">
               {visibleTicket.displayTitle}
             </h2>
+            {projectSettings &&
+            (assignedBranch ||
+              showCheckedOutBranch ||
+              projectInfo?.defaultBranch) ? (
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                {assignedBranch ? (
+                  <span>Assigned {assignedBranch}</span>
+                ) : null}
+                {showCheckedOutBranch ? (
+                  <span>Checked out {projectInfo?.currentBranch}</span>
+                ) : null}
+                {projectInfo?.defaultBranch ? (
+                  <span>Default {projectInfo.defaultBranch}</span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+            {projectSettings ? (
+              <>
+                {!assignedBranch ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setBranchDialogOpen(true)}
+                    disabled={branchActionLoading || !baseBranch}
+                  >
+                    <HugeiconsIcon icon={Add01Icon} strokeWidth={2} />
+                    Assign
+                  </Button>
+                ) : null}
+                {assignedBranch ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void checkoutAssignedBranch()}
+                    disabled={branchActionLoading}
+                  >
+                    Checkout
+                  </Button>
+                ) : null}
+                {assignedBranch ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={detachTicketBranch}
+                    disabled={branchActionLoading}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+                    Detach
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (assignedBranch) {
+                      setBranchName(assignedBranch)
+                    }
+                    setPrDialogOpen(true)
+                  }}
+                  disabled={prActionLoading || !assignedBranch}
+                >
+                  <HugeiconsIcon icon={Github01Icon} strokeWidth={2} />
+                  PR
+                </Button>
+              </>
+            ) : null}
             {visibleTicket.url ? (
               <Button
                 variant="ghost"
@@ -442,6 +900,197 @@ export function TicketDetailPanel({
             />
           ) : null}
         </section>
+
+        <section className="grid gap-3 border border-border bg-card p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-medium">Local project</h3>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Branch and pull request helpers for this board.
+              </p>
+            </div>
+            {projectLoading ? <Badge variant="secondary">loading</Badge> : null}
+          </div>
+
+          {projectSettings ? (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {projectInfo?.repoSlug ? (
+                  <Badge variant="outline">{projectInfo.repoSlug}</Badge>
+                ) : null}
+                {createdPr ? (
+                  <Button asChild variant="outline">
+                    <a href={createdPr.url} target="_blank" rel="noreferrer">
+                      Open created PR
+                    </a>
+                  </Button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Link this board to a local repo in Settings to create ticket
+              branches and draft pull requests.
+            </p>
+          )}
+        </section>
+
+        <Dialog
+          open={branchDialogOpen}
+          onOpenChange={(open) => {
+            if (open) {
+              refreshLocalSettings()
+              setBranchDialogMode(assignedBranch ? "existing" : "new")
+            }
+            setBranchDialogOpen(open)
+          }}
+        >
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Assign branch</DialogTitle>
+              <DialogDescription>
+                Assign an existing branch to this ticket, or create a new one
+                and assign it in one go.
+              </DialogDescription>
+            </DialogHeader>
+            <Tabs
+              value={branchDialogMode}
+              onValueChange={(value) =>
+                setBranchDialogMode(value as "existing" | "new")
+              }
+              className="gap-3"
+            >
+              <TabsList variant="line" className="w-full justify-start">
+                <TabsTrigger value="existing">Choose branch</TabsTrigger>
+                <TabsTrigger value="new">Create new</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="existing" className="grid gap-3">
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-medium">Branch</span>
+                  <Select
+                    value={selectedExistingBranch || "__none__"}
+                    onValueChange={(value) =>
+                      setSelectedExistingBranch(
+                        value === "__none__" ? "" : value
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose branch" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">No branch selected</SelectItem>
+                      {(projectInfo?.branches.length
+                        ? projectInfo.branches
+                        : ["main"]
+                      ).map((branch) => (
+                        <SelectItem key={branch} value={branch}>
+                          {branch}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </TabsContent>
+
+              <TabsContent value="new" className="grid gap-3">
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-medium">Base branch</span>
+                  <Select value={baseBranch} onValueChange={setBaseBranch}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose base branch" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(projectInfo?.branches.length
+                        ? projectInfo.branches
+                        : ["main"]
+                      ).map((branch) => (
+                        <SelectItem key={branch} value={branch}>
+                          {branch}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-medium">Branch name</span>
+                  <Input
+                    value={branchName}
+                    onChange={(event) => setBranchName(event.target.value)}
+                    placeholder="ticket/ABC-123-something"
+                  />
+                </label>
+              </TabsContent>
+            </Tabs>
+            <DialogFooter showCloseButton>
+              {branchDialogMode === "existing" ? (
+                <Button
+                  variant="outline"
+                  onClick={assignExistingBranch}
+                  disabled={!selectedExistingBranch}
+                >
+                  Assign selected branch
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => void createLinkedBranch()}
+                  disabled={branchActionLoading || !branchName || !baseBranch}
+                >
+                  <HugeiconsIcon icon={Add01Icon} strokeWidth={2} />
+                  {branchActionLoading ? "Creating branch" : "Create and assign"}
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={prDialogOpen}
+          onOpenChange={(open) => {
+            if (open) {
+              refreshLocalSettings()
+            }
+            setPrDialogOpen(open)
+          }}
+        >
+          <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Create draft PR</DialogTitle>
+              <DialogDescription>
+                Review and edit the generated pull request details before
+                opening it on GitHub.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid min-h-0 gap-3 overflow-hidden">
+              <label className="grid gap-1.5">
+                <span className="text-xs font-medium">PR title</span>
+                <Input
+                  value={prTitle}
+                  onChange={(event) => setPrTitle(event.target.value)}
+                  placeholder="[ABC-123] Ticket title"
+                />
+              </label>
+              <label className="grid min-h-0 gap-1.5 overflow-hidden">
+                <span className="text-xs font-medium">PR description</span>
+                <Textarea
+                  value={prBody}
+                  onChange={(event) => setPrBody(event.target.value)}
+                  className="max-h-[50vh] min-h-40 overflow-y-auto"
+                />
+              </label>
+            </div>
+            <DialogFooter showCloseButton>
+              <Button
+                onClick={() => void createLinkedPullRequest()}
+                disabled={prActionLoading || !prTitle.trim() || !prBody.trim()}
+              >
+                <HugeiconsIcon icon={Github01Icon} strokeWidth={2} />
+                {prActionLoading ? "Creating PR" : "Create draft PR"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {visibleTicket.prUrl ? (
           <Button asChild className="w-fit" variant="outline">
@@ -1575,6 +2224,57 @@ function formatDate(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value))
+}
+
+function applyTemplate(
+  template: string,
+  ticket: MondayTicket,
+  baseBranch: string,
+  branchName: string,
+  ticketSummary?: string,
+  ticketDescription?: string
+) {
+  const values: Record<string, string> = {
+    baseBranch,
+    branchName,
+    slug: slugify(ticket.displayTitle || ticket.title || ticket.id),
+    summary: [ticketSummary, ticketDescription]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join("\n\n"),
+    ticketId: ticket.id,
+    ticketTitle: ticket.displayTitle || ticket.title,
+    ticketUrl: ticket.url || "",
+  }
+
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
+    return values[key] || ""
+  })
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
+function getTicketPrSummary(
+  ticket: MondayTicket,
+  customNameFields: Array<MondayTicketColumnValue>
+) {
+  return (
+    customNameFields.find((column) => column.text.trim())?.text.trim() ||
+    ticket.displayTitle ||
+    ticket.title
+  )
+}
+
+function getTicketPrDescription(
+  ticket: MondayTicket,
+  descriptionField?: MondayTicketColumnValue
+) {
+  return descriptionField?.text.trim() || ticket.description?.trim() || ""
 }
 
 function getInitials(name: string) {

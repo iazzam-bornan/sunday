@@ -64,6 +64,14 @@ export type BoardFilters = {
 
 export type BoardViewMode = "board" | "list"
 
+export type ProjectLinkSettings = {
+  baseBranch?: string
+  branchTemplate?: string
+  path?: string
+  prBodyTemplate?: string
+  prTitleTemplate?: string
+}
+
 export type AppSettings = MondaySettings & {
   boardFiltersByBoard?: Record<string, BoardFilters>
   boardViewByBoard?: Record<string, BoardViewMode>
@@ -77,6 +85,8 @@ export type AppSettings = MondaySettings & {
   themeMode?: ThemeMode
   customTheme?: ThemeTokenMap
   visibleStatusIdsByBoard?: Record<string, Array<string>>
+  projectLinksByBoard?: Record<string, ProjectLinkSettings>
+  ticketBranchAssignmentsByBoard?: Record<string, Record<string, string>>
 }
 
 export type MondayBoardSummary = {
@@ -176,4 +186,19 @@ export type MondayBootstrap = {
   hasEnvToken: boolean
   envDefaultBoardId?: string
   envStatusColumnId?: string
+}
+
+export type LocalProjectRepoInfo = {
+  branches: Array<string>
+  currentBranch?: string
+  defaultBranch?: string
+  path: string
+  remoteName?: string
+  repoSlug?: string
+  topLevelPath: string
+}
+
+export type CreatedPullRequest = {
+  number?: number
+  url: string
 }
